@@ -1,8 +1,11 @@
+// 📁 auth.controller.js
 const db = require("../models/db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const dotenv = require("dotenv");
 const Joi = require("joi");
+const { getAgeFromBirthdate } = require("../utils/utils");
+
 dotenv.config();
 
 function generateParentCode(length = 6) {
@@ -22,6 +25,21 @@ const registerSchema = Joi.object({
   parent_code: Joi.string().optional().allow(null, ''),
 });
 
+function insertUserIntoDb(userData, hashedPassword, parentCodeToInsert, res) {
+  const { username, email, role, birthdate } = userData;
+  const sql = "INSERT INTO users (username, email, password, role, birthdate, parent_code) VALUES (?, ?, ?, ?, ?, ?)";
+  db.query(sql, [username, email, hashedPassword, role, birthdate, parentCodeToInsert], (err, result) => {
+    if (err) return res.status(500).json({ error: "Erreur lors de la création de l'utilisateur" });
+    const token = jwt.sign({ id: result.insertId, role }, process.env.JWT_SECRET, { expiresIn: "6h" });
+    res.status(201).json({
+      message: "Utilisateur créé",
+      userId: result.insertId,
+      token,
+      ...(parentCodeToInsert ? { parent_code: parentCodeToInsert } : {})
+    });
+  });
+}
+
 async function createUserInDb({ username, email, password, role, birthdate, parent_code, age }, res) {
   const emailCheck = "SELECT * FROM users WHERE email = ?";
   db.query(emailCheck, [email], async (err, results) => {
@@ -33,31 +51,22 @@ async function createUserInDb({ username, email, password, role, birthdate, pare
     if (role === "parent") parentCodeToInsert = generateParentCode();
     else if (age < 15) parentCodeToInsert = parent_code || null;
 
-    const sql = "INSERT INTO users (username, email, password, role, birthdate, parent_code) VALUES (?, ?, ?, ?, ?, ?)";
-    db.query(sql, [username, email, hashedPassword, role, birthdate, parentCodeToInsert], (err, result) => {
-      if (err) return res.status(500).json({ error: "Erreur lors de la création de l'utilisateur" });
-      const token = jwt.sign({ id: result.insertId, role }, process.env.JWT_SECRET, { expiresIn: "6h" });
-      res.status(201).json({
-        message: "Utilisateur créé",
-        userId: result.insertId,
-        token,
-        ...(parentCodeToInsert ? { parent_code: parentCodeToInsert } : {})
-      });
-    });
+    insertUserIntoDb({ username, email, role, birthdate }, hashedPassword, parentCodeToInsert, res);
   });
 }
 
 const register = async (req, res) => {
-  const { username, email, password, role, birthdate, parent_code } = req.body;
   const { error } = registerSchema.validate(req.body);
-if (error) return res.status(400).json({ error: error.details[0].message });
+  if (error) return res.status(400).json({ error: error.details[0].message });
 
+  const { username, email, password, role, birthdate, parent_code } = req.body;
   const age = getAgeFromBirthdate(birthdate);
 
+  if (age < 15 && !parent_code) {
+    return res.status(403).json({ error: "Les utilisateurs de moins de 15 ans doivent être créés avec un code parent." });
+  }
+
   if (age < 15) {
-    if (!parent_code) {
-      return res.status(403).json({ error: "Les utilisateurs de moins de 15 ans doivent être créés avec un code parent." });
-    }
     const parentCheck = "SELECT * FROM users WHERE parent_code = ? AND role = 'parent'";
     db.query(parentCheck, [parent_code], (err, parentResults) => {
       if (err) return res.status(500).json({ error: "Erreur lors de la vérification du code parent" });
