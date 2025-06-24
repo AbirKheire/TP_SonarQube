@@ -10,16 +10,17 @@ function generateParentCode(length = 6) {
   return Array.from({ length }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join('');
 }
 
-function validateInput({ username, email, password, role, birthdate }) {
-  if (!username || !email || !password || !role || !birthdate) {
-    return "Tous les champs obligatoires doivent être remplis.";
-  }
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*]).{10,}$/;
-  if (!emailRegex.test(email)) return "Email invalide.";
-  if (!passwordRegex.test(password)) return "Mot de passe trop faible.";
-  return null;
-}
+const registerSchema = Joi.object({
+  username: Joi.string().min(3).max(30).required(),
+  email: Joi.string().email({ tlds: { allow: false } }).required(),
+  password: Joi.string()
+    .pattern(new RegExp("^(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*]).{10,}$"))
+    .message("Le mot de passe doit contenir au moins 10 caractères, une majuscule, un chiffre et un caractère spécial.")
+    .required(),
+  role: Joi.string().valid("enfant", "ado", "parent", "autre").required(),
+  birthdate: Joi.date().iso().required(),
+  parent_code: Joi.string().optional().allow(null, ''),
+});
 
 async function createUserInDb({ username, email, password, role, birthdate, parent_code, age }, res) {
   const emailCheck = "SELECT * FROM users WHERE email = ?";
@@ -48,8 +49,8 @@ async function createUserInDb({ username, email, password, role, birthdate, pare
 
 const register = async (req, res) => {
   const { username, email, password, role, birthdate, parent_code } = req.body;
-  const validationError = validateInput(req.body);
-  if (validationError) return res.status(400).json({ error: validationError });
+  const { error } = registerSchema.validate(req.body);
+if (error) return res.status(400).json({ error: error.details[0].message });
 
   const age = getAgeFromBirthdate(birthdate);
 
