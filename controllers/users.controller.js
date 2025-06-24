@@ -5,6 +5,16 @@ const {
   updateUserService,
   deleteUserService
 } = require("../services/users.service");
+const Joi = require("joi");
+
+const userSchema = Joi.object({
+  username: Joi.string().min(3).required(),
+  email: Joi.string().email().required(),
+  password: Joi.string().pattern(new RegExp("^(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*]).{10,}$")).required(),
+  role: Joi.string().valid("enfant", "ado", "parent", "autre").required(),
+  birthdate: Joi.date().iso().required(),
+  parent_code: Joi.string().optional().allow(null, '')
+});
 
 // GET /api/users
 const getAllUsers = async (req, res) => {
@@ -30,6 +40,9 @@ const getUserById = async (req, res) => {
 
 // POST /api/users
 const createUser = async (req, res) => {
+  const { error } = userSchema.validate(req.body);
+  if (error) return res.status(400).json({ error: error.details[0].message });
+
   try {
     const result = await createUserService(req.body);
     res.status(201).json(result);
