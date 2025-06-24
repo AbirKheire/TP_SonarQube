@@ -1,11 +1,7 @@
-// 📁 auth.controller.js
 const db = require("../models/db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const dotenv = require("dotenv");
-const Joi = require("joi");
-const { getAgeFromBirthdate } = require("../utils/utils");
-
 dotenv.config();
 
 function generateParentCode(length = 6) {
@@ -13,37 +9,27 @@ function generateParentCode(length = 6) {
   return Array.from({ length }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join('');
 }
 
-const registerSchema = Joi.object({
-  username: Joi.string().min(3).required(),
-  email: Joi.string().email().required(),
-  password: Joi.string().pattern(new RegExp("^(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*]).{10,}$")).required(),
-  role: Joi.string().valid("child", "parent", "admin").required(),
-  birthdate: Joi.date().required(),
-  parent_code: Joi.string().optional(),
-});
-
-const loginSchema = Joi.object({
-  email: Joi.string().email().required(),
-  password: Joi.string().required(),
-  parent_code: Joi.string().optional(),
-});
-
-function createUser({ username, email, hashedPassword, role, birthdate, parent_code, age }, res, parentCodeToInsert) {
-  const sql = "INSERT INTO users (username, email, password, role, birthdate, parent_code) VALUES (?, ?, ?, ?, ?, ?)";
-  db.query(sql, [username, email, hashedPassword, role, birthdate, parentCodeToInsert], (err, result) => {
-    if (err) return res.status(500).json({ error: "Erreur lors de la création de l'utilisateur" });
-    const token = jwt.sign({ id: result.insertId, role }, process.env.JWT_SECRET, { expiresIn: "6h" });
-    res.status(201).json({
-      message: "Utilisateur créé",
-      userId: result.insertId,
-      token,
-      ...(parentCodeToInsert ? { parent_code: parentCodeToInsert } : {})
-    });
-  });
+function getAgeFromBirthdate(birthdate) {
+  const birth = new Date(birthdate);
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const m = today.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+  return age;
 }
 
-async function createUserInDb(data, res) {
-  const { username, email, password, role, birthdate, parent_code, age } = data;
+function validateInput({ username, email, password, role, birthdate }) {
+  if (!username || !email || !password || !role || !birthdate) {
+    return "Tous les champs obligatoires doivent être remplis.";
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*]).{10,}$/;
+  if (!emailRegex.test(email)) return "Email invalide.";
+  if (!passwordRegex.test(password)) return "Mot de passe trop faible.";
+  return null;
+}
+
+async function createUserInDb({ username, email, password, role, birthdate, parent_code, age }, res) {
   const emailCheck = "SELECT * FROM users WHERE email = ?";
   db.query(emailCheck, [email], async (err, results) => {
     if (err) return res.status(500).json({ error: "Erreur serveur" });
@@ -54,22 +40,31 @@ async function createUserInDb(data, res) {
     if (role === "parent") parentCodeToInsert = generateParentCode();
     else if (age < 15) parentCodeToInsert = parent_code || null;
 
-    createUser({ username, email, hashedPassword, role, birthdate, parent_code, age }, res, parentCodeToInsert);
+    const sql = "INSERT INTO users (username, email, password, role, birthdate, parent_code) VALUES (?, ?, ?, ?, ?, ?)";
+    db.query(sql, [username, email, hashedPassword, role, birthdate, parentCodeToInsert], (err, result) => {
+      if (err) return res.status(500).json({ error: "Erreur lors de la création de l'utilisateur" });
+      const token = jwt.sign({ id: result.insertId, role }, process.env.JWT_SECRET, { expiresIn: "6h" });
+      res.status(201).json({
+        message: "Utilisateur créé",
+        userId: result.insertId,
+        token,
+        ...(parentCodeToInsert ? { parent_code: parentCodeToInsert } : {})
+      });
+    });
   });
 }
 
 const register = async (req, res) => {
-  const { error } = registerSchema.validate(req.body);
-  if (error) return res.status(400).json({ error: error.details[0].message });
-
   const { username, email, password, role, birthdate, parent_code } = req.body;
+  const validationError = validateInput(req.body);
+  if (validationError) return res.status(400).json({ error: validationError });
+
   const age = getAgeFromBirthdate(birthdate);
 
-  if (age < 15 && !parent_code) {
-    return res.status(403).json({ error: "Les utilisateurs de moins de 15 ans doivent être créés avec un code parent." });
-  }
-
   if (age < 15) {
+    if (!parent_code) {
+      return res.status(403).json({ error: "Les utilisateurs de moins de 15 ans doivent être créés avec un code parent." });
+    }
     const parentCheck = "SELECT * FROM users WHERE parent_code = ? AND role = 'parent'";
     db.query(parentCheck, [parent_code], (err, parentResults) => {
       if (err) return res.status(500).json({ error: "Erreur lors de la vérification du code parent" });
@@ -84,12 +79,10 @@ const register = async (req, res) => {
 };
 
 const login = (req, res) => {
-  const { error } = loginSchema.validate(req.body);
-  if (error) return res.status(400).json({ error: error.details[0].message });
-
   const { email, password, parent_code } = req.body;
-  const sql = "SELECT * FROM users WHERE email = ?";
+  if (!email || !password) return res.status(400).json({ error: "Email et mot de passe requis" });
 
+  const sql = "SELECT * FROM users WHERE email = ?";
   db.query(sql, [email], async (err, results) => {
     if (err) return res.status(500).json({ error: "Erreur serveur" });
     if (results.length === 0) return res.status(401).json({ error: "Email ou mot de passe incorrect" });
@@ -99,8 +92,10 @@ const login = (req, res) => {
     if (!passwordMatch) return res.status(401).json({ error: "Email ou mot de passe incorrect" });
 
     const age = getAgeFromBirthdate(user.birthdate);
-    if (age < 15 && user.parent_code && (!parent_code || user.parent_code !== parent_code)) {
-      return res.status(403).json({ error: "Code parental requis ou incorrect" });
+    if (age < 15 && user.parent_code) {
+      if (!parent_code || user.parent_code !== parent_code) {
+        return res.status(403).json({ error: "Code parental requis ou incorrect" });
+      }
     }
 
     const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: "6h" });

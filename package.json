@@ -11,6 +11,7 @@
   "dependencies": {
     "bcrypt": "^6.0.0",
     "dotenv": "^16.5.0",
+    "gitignore": "^0.7.0",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2"
   }
